@@ -1,0 +1,118 @@
+from os.path import basename, dirname
+
+configfile: 'maps.yaml'
+
+subworkflow natural_earth:
+    workdir:
+        "Natural Earth/"
+
+PHYSICAL_LAYERS = ['land', 'ocean', 'coastline', 'rivers_lake_centerlines', 'lakes'] \
+    + ['geography_' + x for x in ['regions_polys', 'regions_points', 'regions_elevation_points', 'marine_polys']] \
+    + ['glaciated_areas', 'geographic_lines'] \
+    + ['graticules_' + str(x) for x in [1, 5, 10, 15, 20, 30]] + ['wgs84_bounding_box']
+
+wildcard_constraints:
+    scope = '(?:' + '|'.join(config['geographic_scope'].keys())  + ')',
+    resolution = '(?:10|50|110)m',
+    layer = '(?:' + '|'.join(PHYSICAL_LAYERS) + ')'
+
+def mean_earth_radius(epsg):
+    from osgeo.osr import SpatialReference
+    srs = SpatialReference()
+    srs.ImportFromEPSG(epsg)
+
+    return (2 * srs.GetSemiMajor() + srs.GetSemiMinor()) / 3
+
+def orthographic_projection(lat_0, lon_0, earth_radius):
+    return '+proj=ortho +lat_0={lat_0} +lon_0={lon_0} +x_0=0 +y_0=0 +a={earth_radius} +b={earth_radius} +units=m +no_defs'.format(lat_0 = lat_0, lon_0 = lon_0, earth_radius = earth_radius)
+
+rule:
+    input:
+        'gshhg-shp-2.3.7.zip',
+        'sphere_110m_land.gml',
+        'life_cycle.svg'
+
+rule lifecycle:
+    output:
+        'life_cycle.pdf'
+    script:
+        'life_cycle.py'
+
+rule cairo_svg:
+    input:
+        '{picture}.pdf'
+    output:
+        '{picture}.svg'
+    shell:
+        'pdftocairo -svg {input:q} {output:q}'
+
+rule download_gshhg:
+    output:
+        protected('gshhg-{format}-{version}.{archive}')
+    wildcard_constraints:
+        format  = '(?:gmt|shp|bin)',
+        version = '2.3.7',
+        archive = '(?:zip|tar[.]gz)'
+    params:
+        url = lambda wildcards, output: 'http://www.soest.hawaii.edu/pwessel/gshhg/' + basename(output[0])
+    message:
+        '''Download GSHHG data version "{wildcards.version}" in {wildcards.format} format.'''
+    shell:
+        'wget {params.url:q}'
+
+rule sphere_merge:
+    input:
+        gml = 'sphere/{resolution}m/physical/ne_{resolution}m_{layer}.gml'
+    output:
+        gml = 'sphere_{resolution}m_{layer}.gml'
+    wildcard_constraints:
+        resolution = '110',
+        layer = '(?:land)'
+    params:
+        geometry_column = 'geometryProperty'
+    message:
+        'Merge sphere data'
+    shell:
+        'ogr2ogr -f GML {output.gml:q} {input.gml:q} -dialect sqlite -sql "SELECT ST_Union(ST_Buffer({params.geometry_column}, 0.0001)) AS {params.geometry_column} FROM ne_{wildcards.resolution}m_{wildcards.layer}"'
+
+rule sphere:
+    input:
+        hemisphere = 'hemisphere.gml',
+        natural_earth = 'ne/{resolution}/{category}/ne_{resolution}_{layer}.zip'
+    output:
+        gml = 'sphere/{resolution}/{category}/ne_{resolution}_{layer}.gml',
+        xsd = 'sphere/{resolution}/{category}/ne_{resolution}_{layer}.xsd'
+    params:
+        orthographic_projection = orthographic_projection(
+            config['latitude'],
+            config['longitude'],
+            mean_earth_radius(config['geographic_scope']['world']['epsg'])
+        )
+    shell:
+        'ogr2ogr -clipsrc {input.hemisphere:q} -f GML -t_srs {params.orthographic_projection:q} {output.gml:q} "/vsizip/{input.natural_earth}" --config OGR_ENABLE_PARTIAL_REPROJECTION TRUE -skipfailures'
+
+rule hemisphere:
+    output:
+        gml = 'hemisphere.gml',
+        xsd = 'hemisphere.xsd'
+    params:
+        epsg = config['geographic_scope']['world']['epsg'],
+        orthographic_projection = orthographic_projection(
+            config['latitude'],
+            config['longitude'],
+            mean_earth_radius(config['geographic_scope']['world']['epsg'])
+        ),
+        n_points = 10000,
+        point_density = 0.5
+    script: 'hemisphere.py'
+
+rule download_natural_earth_physical_data:
+    output:
+        protected('ne/{resolution}/physical/ne_{resolution}_{layer}.zip')
+    params:
+        dir = lambda wildcards, output: dirname(output[0]),
+        url = lambda wildcards, output: 'https://www.naturalearthdata.com/http//www.naturalearthdata.com/download/' + output[0]
+    message:
+        '''Download Natural Earth physical layer "{wildcards.layer}" at {wildcards.resolution} resolution.'''
+    shell:
+        'wget --directory-prefix={params.dir:q} {params.url:q}'

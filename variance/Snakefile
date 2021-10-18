@@ -1,0 +1,99 @@
+configfile:  '../model/definitions.yaml'
+
+models     = [x['id'] for x in config['definitions']['model']['scope']]
+parameters = [x['id'] for x in config['definitions']['model']['parameter']]
+groupings  = [x['id'] for x in config['definitions']['variance partitioning']['grouping']]
+scopes     = [x['id'] for x in config['definitions']['variance partitioning']['scope']]
+partitions = [x['id'] for x in config['definitions']['variance partitioning']['partition']]
+measures   = [x['id'] for x in config['definitions']['variance partitioning']['measure']]
+
+wildcard_constraints:
+    model     = '(?:' + '|'.join(models) + ')',
+    parameter = '(?:' + '|'.join(parameters) + ')',
+    grouping  = '(?:' + '|'.join(groupings) + ')',
+    scope     = '(?:' + '|'.join(scopes) + ')',
+    partition = '(?:' + '|'.join(partitions) + ')',
+    measure   = '(?:' + '|'.join(measures) + ')'
+
+subworkflow data:
+    workdir: '../data'
+
+subworkflow model:
+    workdir: '../model'
+
+rule:
+    input:
+        expand(
+            ['core/sample/complete/individual/{parameter}/variance_partition.rds',
+             'core/sample/conditional/grouped/{parameter}/covariate_class/vegetation/variance_partition.rds',
+             'core/sample/within-between/grouped/{parameter}/covariate_class/patch/variance_partition.rds'],
+            parameter = ['mean', 'distribution']
+        ),
+        expand(
+            'core/{scope}/complete/grouped/{parameter}/covariate_class/{measure}.rds',
+            scope = ['sample', 'population'],
+            parameter = ['mean', 'distribution'],
+            measure = ['variance_partition', 'diagonal_variance_partition']
+        ),
+        expand(
+            'core/sample/complete/grouped/{parameter}/covariate_class/{measure}.rds',
+            parameter = ['mean', 'distribution'],
+            measure = ['marginal_variance_partition', 'unique_variance_partition', 'correlation_matrix', 'covariance_matrix']
+        )
+
+rule partition_variance:
+    input:
+        covariance = model('{model}/{scope}/{partition}/{parameter}/covariance.rds')
+    output:
+        measure = '{model}/{scope}/{partition}/{grouping}/{parameter}/{measure}.rds'
+    wildcard_constraints:
+        partition = 'complete',
+        grouping = 'individual'
+    script:
+        'partition_variance.R'
+
+rule partition_conditional_variance:
+    input:
+        covariance = model('{model}/{scope}/{partition}/{parameter}/{condition}.rds')
+    output:
+        measure = '{model}/{scope}/{partition}/{grouping}/{parameter}/{condition}/{measure}.rds'
+    wildcard_constraints:
+        condition = '(?:vegetation|patch)',
+        partition = '(?:conditional|within-between)',
+        grouping = 'individual'
+    script:
+        'partition_variance.R'
+
+rule partition_grouped_variance:
+    input:
+        covariance = model('{model}/{scope}/{partition}/{parameter}/covariance.rds'),
+        groups = 'group/{group}.tsv'
+    output:
+        measure = '{model}/{scope}/{partition}/{grouping}/{parameter}/{group}/{measure}.rds'
+    wildcard_constraints:
+        partition = 'complete',
+        grouping = 'grouped',
+        group = 'covariate_class'
+    script:
+        'partition_variance.R'
+
+rule partition_grouped_conditional_variance:
+    input:
+        covariance = model('{model}/{scope}/{partition}/{parameter}/{condition}.rds'),
+        groups = 'group/{group}.tsv'
+    output:
+        measure = '{model}/{scope}/{partition}/{grouping}/{parameter}/{group}/{condition}/{measure}.rds'
+    wildcard_constraints:
+        condition = '(?:vegetation|patch)',
+        partition = '(?:conditional|within-between)',
+        grouping = 'grouped'
+    script:
+        'partition_variance.R'
+
+rule group_covariates:
+     input:
+         covariates = data('covariates.tsv')
+     output:
+         groups = 'group/covariate_class.tsv'
+     script:
+         'group_covariates.R'

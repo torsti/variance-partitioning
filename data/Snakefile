@@ -1,0 +1,70 @@
+rule:
+    input:
+        model_data    = 'model_data.tsv',
+        unscaled_data = 'unscaled_data.tsv',
+        patch_data    = 'patch_data.tsv',
+        covariates    = 'covariates.tsv',
+        mesh          = 'mesh.rds'
+    message:
+        'Default target rule for generated outputs'
+
+rule subdivisions:
+    output:
+        survey_area = 'survey_area.tsv',
+        survey_map  = 'survey_map.tsv'
+    message:
+        '''Survey areas and survey area designations.'''
+
+rule retrieve_dryad_data:
+    output:
+        protected('ECOG-04799.zip')
+    message:
+        'Download data for Schulz et al. 2020 from Data Dryad.'
+    shell:
+        'wget --output-document={output:q} https://datadryad.org/stash/downloads/file_stream/216928'
+
+rule extract_files:
+    input:
+        rules.retrieve_dryad_data.output
+    output:
+        '{file}.tsv'
+    wildcard_constraints:
+        file = '(?:covariates|landuse_buffer|landuse_edge|landuse_patch|patch_area|patch_network|survey_data)'
+    message:
+        'Extract data file {wildcards.file} from the Data Dryad data container.'
+    shell:
+        'unzip -q -j -d $(dirname {output}) {input} data/{wildcards.file}.tsv'
+
+rule prepare_data:
+    input:
+        patch_network = 'patch_network.tsv',
+        survey_area   = 'survey_area.tsv',
+        survey_data   = 'survey_data.tsv',
+        covariates    = 'covariates.tsv'
+    output:
+        model_data    = 'model_data.tsv',
+        patch_data    = 'patch_data.tsv',
+        unscaled_data = 'unscaled_data.tsv'
+    params:
+        a = 2,
+        im = 0.44
+    message:
+        'Prepare data for model inference, including connecticity calculation and data transformations.'
+    script:
+        'prepare_data.R'
+
+rule generate_mesh:
+    input:
+        patch_data = 'patch_data.tsv',
+        survey_map = 'survey_map.tsv'
+    output:
+        mesh = 'mesh.rds'
+    params:
+        cutoff    = 0.75,
+        min_angle = {'initial': 21, 'refined': 26},
+        max_edge  = {'initial': [15, 30], 'refined': 5},
+        offset    = [10, 20]
+    message:
+        'Generate triangulation mesh for SPDE-based spatial field approximation.'
+    script:
+        'generate_mesh.R'

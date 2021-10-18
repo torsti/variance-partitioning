@@ -1,0 +1,6 @@
+*
+!.gitignore
+!nest.jpg
+!Snakefile
+!hemisphere.py
+!maps.yaml
