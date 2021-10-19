@@ -1,5 +1,7 @@
 # Code supplement: Variance partitioning case study
 
+[![DOI](https://zenodo.org/badge/418511320.svg)](https://zenodo.org/badge/latestdoi/418511320)
+
 This README provides a brief summary of the *Code supplement*.
 
 Preprint available on [biorXiv](https://doi.org/10.1101/2021.10.17.464682).
