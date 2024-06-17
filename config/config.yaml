@@ -1,0 +1,59 @@
+model:
+  posterior samples: 1000
+  core area:
+    - "3"
+    - 4Sa
+    - 4Su
+    - 5S
+  excluded areas:
+    - Brändö
+    - Enklinge
+    - Husö
+    - Kökar
+  scope:
+    - id: core
+      name: core survey
+    - id: full
+      name: full survey
+  response:
+    - id: occupancy
+      name: model for occupancy
+    - id: abundance
+      name: model for conditional abundance
+variance partitioning:
+  grouping:
+    - id: individual
+      name: individual linear terms
+    - id: grouped
+      name: grouped linear terms
+  partition:
+    - id: complete
+      name: over all data
+    - id: conditional
+      name: within conditions
+    - id: within-between
+      name: within and between conditions
+  scope:
+    - id: sample
+      name: data used for inference
+    - id: prediction
+      name: new data
+    - id: population
+      name: sample and prediction
+  measure:
+    - id: covariance_matrix
+      name: normalized covariance matrix of the linear terms
+    - id: correlation_matrix
+      name: correlation matrix of the linear terms
+    - id: variance_partition
+      name: normalized variance of the linear terms
+    - id: diagonal_variance_partition
+      name: diagonal variance of the linear terms
+    - id: marginal_variance_partition
+      name: marginal variance partition of the linear terms
+    - id: partial_variance_partition
+      name: partial variance partition of the linear terms
+    - id: partial_covariance_matrix
+      name: normalized partial covariance matrix of the linear terms
+figures:
+  font_family: Helvetica

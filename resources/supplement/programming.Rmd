@@ -1,0 +1,711 @@
+---
+title: "Appendix S2: Variance partitioning programming tutorial"
+subtitle: |
+    | Model-based variance partitioning for statistical ecology
+    | Ecological Monographs
+author:
+  - Torsti Schulz
+  - Marjo Saastamoinen
+  - Jarno Vanhatalo
+output:
+  pdf_document:
+    extra_dependencies: ["booktabs"]
+    fig_caption: yes
+---
+
+#### Foreword
+
+\setcounter{table}{0}
+\setcounter{figure}{0}
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thefigure}{S\arabic{figure}}
+
+To simplify the presentation of the essential material, some of the code involved in generating this tutorial has been omitted from the rendered version.
+The RMarkdown source file can be consulted to see the code for generating the tables and figures, it is available in the code release associated with this paper (Schulz *et al.* 2024).
+In general, the code in this tutorial aims to demonstrate that the computations involved in working with posterior distributions of variance partitions are rather simple.
+The code is not written with performance, numerical stability, or customizability in mind, but just to help the applied ecologist understand the kinds of computational tasks involved in variance partitioning.
+
+```{r label = "libraries and knitr options", echo = FALSE, message = FALSE}
+library(rmarkdown)
+library(vioplot)
+
+knitr::opts_chunk$set(
+    message = FALSE,
+    fig.width = 7.5,
+    fig.height = 5,
+    fig.align = "center",
+    out.width = "70%",
+    collapse = TRUE
+)
+
+options(mc.cores = parallel::detectCores())
+```
+
+```{r label = "output functions", echo = FALSE}
+vp_summary <- function(x, quantiles, nm) {
+    x <- get(x)
+
+    vp <- data.frame(
+        mu = apply(x, "variance", mean),
+        var = apply(x, "variance", var),
+        t(apply(x, "variance", quantile, quantiles))
+    )
+
+    rownames(vp) <- nm
+    return(vp)
+}
+
+print_vp_table <- function(x, nm, xn = NULL, caption = NULL) {
+    quantiles <- c(0.025, 0.05, 0.5, 0.95, 0.975)
+
+    if (is.null(xn)) {
+        xn <- x
+    }
+
+    knitr::kable(
+        x = vp_summary(x, quantiles, nm),
+        digits = 3,
+        col.names = paste0("$\\mathrm{", c("E", "Var", paste("Q_{", substring(quantiles, 2), "}")), "}[", xn, "]$"),
+        escape = FALSE,
+        caption = caption,
+        booktabs = TRUE,
+        longtable = FALSE,
+        format = "latex",
+        position = "!ht"
+    )
+}
+
+vp_plot <- function(x, col = "grey80", nm) {
+    vp <- as.data.frame(aperm(x, c("iterations", "variance")))
+    colnames(vp) <- nm
+
+    if (max(vp) <= 1 & min(vp) >= 0) {
+        ylim <- 0:1
+    } else {
+        ylim <- NULL
+    }
+
+    vioplot(
+        vp,
+        col = col,
+        drawRect = TRUE,
+        pchMed = NA,
+        ylim = ylim
+    )
+}
+```
+
+# Example model: Linearized Ricker model
+
+We demonstrate the use of the variance partitioning methods with a worked example of a simple linear model.
+
+For the demonstration we use the Bayesian regression modeling R-package `rstanarm`.
+Though less versatile than for example the Bayesian modelling package `brms`, its syntax is very similar to traditional R regression packages and libraries.
+
+## R dependencies
+
+```{r label = "library setup"}
+library("rstanarm")
+library("Matrix")
+```
+
+## Data
+
+We use for the demonstration the same Glanville fritillary dataset as in the main study --- specifically the file `data/survey_data.tsv` inside the in the Dryad dataset archive `ECOG-04799.zip` (Schulz *et al.* 2019, 2020).
+
+```{r label = "load data"}
+con <- unz(
+    description = "ECOG-04799.zip",
+    filename = file.path("data", "survey_data.tsv")
+)
+dat <- read.delim(con, na.strings = "NULL")
+```
+
+For the demonstration we select a sample of twenty patches that have been continuously inhabited by the butterfly from 1998 to 2009.
+We split the patches into two groups of ten patches, one for fitting the model and the other for predictive variance partitioning.
+
+```{r label = "subset data"}
+sample_patches <- c(
+       4,    6,   29,   41,  278,  503,  511,  875,  954,  975
+)
+prediction_patches <- c(
+    1051, 1071, 1183, 1189, 1377, 1387, 1642, 1674, 9563, 9668
+)
+
+dat <- dat[dat$year < 2010,]
+dat$vegetation <- pmax(dat$plantago, dat$veronica)
+
+dat_pred <- dat[dat$patch %in% prediction_patches,]
+dat <- dat[dat$patch %in% sample_patches,]
+```
+
+## Regression model and inference
+
+We model the (log) growth rate using the linearized Ricker model (see, e.g., Weigel *et al*., 2021) and fit it using `rstanarm`:
+
+$$\overbrace{\log(\frac{N_{i,t}}{N_{i,t-1}}) = y_{i,t}}^{\rm growth\ rate} = \overbrace{\alpha + \sum_{j=1}^{d}\beta_j x_{i,j} +  \gamma_t}^{\rm intrinsic\ growth\ rate} - \overbrace{\beta_N N_{i,t-1}}^{\rm density\ dependence} + \overbrace{\epsilon_{i,t}}^{\rm residual}.$$
+
+$\gamma_t$ in the \emph{intrinsic growth rate} component of the model corresponds to a yearly random effect and the $x$s to the covariates.
+Here, we include only host plant abundance and grazing intensity as habitat quality covariates for predicting the growth rate.
+
+```{r label = "model inference"}
+dat$growth_rate <- dat$population / dat$previous_population
+
+fit  <- stan_lmer(
+    log(growth_rate) ~
+        log1p(vegetation) + grazing_presence + (1|year) + previous_population,
+    dat
+)
+```
+
+# Variance partitioning in practice
+
+In practical applications the most challenging part of implementing variance partitioning as part of the analysis is the forming of the matrix of linear terms and calculation of the covariance matrix for the linear terms.
+The challenges stem from the need to tailor this step to whatever model structure and software is in use.
+The general steps involve combining the model covariates and parameters to form a matrix where each column corresponds to one linear term and each row to one observation.
+For linear regression models constructing the matrix of linear terms amounts to multiplying the covariates by their corresponding regression weights, but models with non-linear and random effects require more effort.
+
+## Matrix of linear terms
+
+To form the matrix of linear terms, $A$ (See Appendix S1), when working with a (generalized) linear model we can use the design matrix, $X$, of the model.
+And in this case where the model response is linear we can also use the dependent variable $y$ to calculate the residuals.
+It can be helpful to avoid forming and storing the matrix of linear terms explicitly, as this will require memory in proportion to the product of the number of observations, number of linear terms and number of posterior samples (*iterations* in the code).
+Instead it can be sensible to work with the covariance matrix directly when calculating the variance partitioning measures.
+
+The following steps depend on the specific packages used to fit the model, and must be adapted when doing inference with a different tool.
+
+```{r label = "extract model data"}
+X <- fit$x
+X <- X[,!grepl("_NEW", colnames(X))]
+y <- fit$y
+```
+
+We need the parameter samples, $\theta$ from the posterior distribution as well. For objects of class `stanfit`, this is rather simple:
+
+```{r label = "extract parameters"}
+params <- as.matrix(fit)
+```
+
+For calculating the different variance partitioning measures for groups of linear terms we need to define the grouping (see below and Appendix S1).
+
+```{r label = "linear term groups"}
+groups <- list(
+    habitat_quality = c("log1p(vegetation)", "grazing_presence"),
+    density_dependence = c("previous_population"),
+    year = "year",
+    residuals = "residuals"
+)
+
+groups_pretty <- gsub("_", " ", names(groups))
+
+linear_terms <- unname(unlist(groups))
+```
+
+```{r echo = FALSE}
+linear_terms_pretty <- linear_terms
+names(linear_terms_pretty) <- linear_terms
+linear_terms_pretty <- gsub("_", " ", linear_terms_pretty)
+linear_terms_pretty["log1p(vegetation)"] <- "vegetation"
+linear_terms_pretty["grazing_presence"] <- "grazing"
+linear_terms_pretty["previous_population"] <- "$N_{t-1}$"
+```
+
+To simplify the code and improve readability, we define auxliary constants for the number of linear terms, number groups of linear terms, and number of posterior samples (or *iterations*).
+
+```{r label = "constants"}
+n_lt <- length(linear_terms)
+n_group <- length(groups)
+n_iter <- nrow(params)
+```
+
+We get the linear terms corresponding to the model covariates by simply multiplying the corresponding columns in the design matrix by a diagonal matrix containing the regression weights along the diagonal.
+
+In this case the levels of the *iid* random effect are represented using dummy coding. Hence, to form the linear term for the the yearly *iid* random effect $\gamma_t$, we can collapse the corresponding columns in the design matrix by multiplying with the respective posterior samples for the levels of the random effect.
+
+```{r label = "construct matrix of linear terms"}
+construct_lin_term_mat <- function(params, X, y) {
+
+    ## Linear terms for the growth rate and density dependence
+    X_cov <- X[, !grepl("(Intercept)", colnames(X), fixed = TRUE)]
+    A_cov <- as.matrix(X_cov %*% Diagonal(x = params[colnames(X_cov)]))
+    colnames(A_cov) <- colnames(X_cov)
+
+    ## Linear term for the yearly random effect
+    X_iid <- X[,grep("b[(Intercept)", colnames(X), fixed = TRUE)]
+    A_iid <- X_iid %*% params[colnames(X_iid)]
+    colnames(A_iid) <- c("year")
+
+    A <- cbind(A_cov, A_iid)
+
+    ## Linear term for residuals (omiting the intercept above does not affect variance)
+    A <- cbind(A, residuals = y - rowSums(A))
+
+    return(as.matrix(A))
+}
+```
+
+## Covariance matrix
+
+The sample covariance matrix of the linear terms, $K_A$, can be used to calculate all the variance partitioning measures presented in this paper (and many others; see Appendix S1).
+Hence, it is the only thing we need to store for further computations (with the exception of conditional variance partitioning; see below).
+To avoid storing the matrix of linear terms, it is constructed inside a function that calculates the covariance matrix.
+
+```{r label = "construct covariance matrix"}
+lin_term_cov <- function(params, X, y) {
+    A <- construct_lin_term_mat(params, X, y)
+    A <- A[,linear_terms]
+    K <- cov(A)
+    dimnames(K) <- list(colnames(A), colnames(A))
+    return(K)
+}
+```
+
+Now we can calculate the posterior distribution of the sample covariance matrix of the linear terms by applying the above function to each sample of posterior parameters.
+As the `apply` function collapses the output of the function over which it is called to a single dimension, we have to restore the proper dimensions.
+
+```{r label = "posterior of covariance matrix"}
+K <- apply(params, "iterations", lin_term_cov, X, y)
+
+dim(K) <- c(n_lt, n_lt, n_iter)
+dimnames(K) <- list(rows = linear_terms, cols = linear_terms, iterations = NULL)
+```
+
+### Variance partition $V_x$
+
+#### Normalizing term
+
+Here, we normalize the variance partitions using the variance of the dependent variable $y$ which is fully observed and, hence, the variance partitioning becomes $V_j = \frac{K_{A_{j,j}}}{\mathrm{Var}[y]}$.
+
+```{r label = "variance partition of linear terms"}
+V_x <- apply(K, "iterations", diag) / var(y)
+dimnames(V_x) <- list(variance = linear_terms, iterations = NULL)
+```
+
+Note though, that for non-linear models the normalizing term is the variance of the linear predictor $\eta$ (see Section 2.2 in the article).
+The linear predictor $\eta$ would differ for each posterior sample so that the division by $\mathrm{Var}[\eta] = 1"K1$ (or `var(eta) = sum(K)`) would have had to happen inside the `apply` -call or use elementwise division with the denominator differing for each iteration; for example the $V_x$ above would be `V_x <- apply(K, "iterations", diag) / apply(K, "iterations", sum)`.
+This is the case also when we calculate the diagonal variance partitioning $V_x^{\textrm{diag}}$ as illustrated below.
+
+#### Posterior summaries
+
+To calculate posterior summaries, such as means and variances of the variance partitions we can use the posterior samples; expectations of distributions can be approximated by averages over samples from that distribution.
+For example, the variance of the yearly random effect, $\mathrm{Var}[V_{x_\gamma}]$, can be calculated as simply as `var(V_x["year",])`.
+
+```{r echo = FALSE}
+print_vp_table("V_x", linear_terms_pretty, caption = "Summary of variance partition measures of the linear terms. $\\mathrm{Q}_p[V_x] = \\mathrm{Pr}[V_x \\leq x] \\leq p$ is the posterior quantile of the variance partitioning measure.")
+```
+
+
+## Variance partitioning for groups of linear terms
+
+### Variance partition $V_b$
+
+Utilizing the properties of variance of linear combinations, we can calculate the covariance matrix for the groups of linear terms as a simple matrix product.
+For that we need a matrix $B$ with one column for each group and a row for each linear term.
+The elements of the matrix are one if the linear term of the corresponding row is in the group of the respective column and zero otherwise (see Appendix S1).
+The R code to form the $B$ matrix utilizes the list of group memberships defined above.
+
+```{r label = "groups of linear terms"}
+B <- sapply(groups, function(x) { as.integer(linear_terms %in% x) })
+
+dimnames(B) <- list(linear_terms = linear_terms, groups = colnames(B))
+```
+
+```{r echo = FALSE}
+knitr::kable(
+    (function(x) {rownames(x) <- linear_terms_pretty; return(x)})(B),
+    col.names = gsub("_", " ", colnames(B)),
+    caption = "The $B$-matrix showing the group memberships of the linear terms.",
+    booktabs = TRUE,
+    longtable = FALSE,
+    format = "latex",
+    position = "!h",
+    escape = FALSE
+)
+```
+
+Given $B$ we can calculate the covariance matrix at the level of groups of linear terms $K_B = B" K_A B$. Then the calculation of $V_b$ follows analogously to $V_x$ above.
+
+```{r label = "variance partition for groups of linear terms"}
+K_B <- apply(K, "iterations", function(x, B) { t(B) %*% x %*% B }, B)
+
+dim(K_B) <- c(n_group, n_group, n_iter)
+dimnames(K_B) <- list(rows = names(groups), cols = names(groups), iterations = NULL)
+
+V_b <- apply(K_B, "iterations", diag) / var(y)
+dimnames(V_b) <- list(variance = names(groups), iterations = NULL)
+```
+
+```{r echo = FALSE}
+print_vp_table("V_b", groups_pretty, caption = "Summaries of the posterior distribution of the variance partition over groups of linear terms.")
+```
+
+```{r echo = FALSE, fig.cap = "Variance partition for groups of linear terms."}
+vp_plot(V_b, "lightblue", groups_pretty)
+```
+
+### Diagonal variance partition $V_b^{\textrm{diag}}$
+
+In matrix notation the diagonal variance partition is calculated as $V_l^{\textrm{diag}} = \frac{K_{B_{l,l}}}{\mathrm{tr}(K_B)}$ where $\mathrm{tr}()$ is the trace of the matrix, that is the sum of its diagonal terms.
+
+```{r label = "diagonal variance partition"}
+V_b_diag <- apply(K_B, "iterations", function(x) {diag(x) / sum(diag(x))})
+dimnames(V_b_diag) <- list(variance = names(groups), iterations = NULL)
+```
+
+```{r echo = FALSE}
+print_vp_table("V_b_diag", groups_pretty, "V_b^{\\mathrm{diag}}", caption = "Summaries of the posterior distribution of the diagonal variance partition over groups of linear terms.")
+```
+
+```{r echo = FALSE, fig.cap = "Diagonal variance partition for groups of linear terms."}
+vp_plot(V_b_diag, "palevioletred", groups_pretty)
+```
+
+### Marginal variance partition $M_b$
+
+The marginal variance partition can be formed by taking the row (or column) sums of the covariance matrix.
+
+$$M_l = \frac{(K_B 1_m)_l}{\mathrm{Var}[y]}$$
+
+```{r label = "marginal variance partitioning"}
+M_b <- apply(K_B, "iterations", rowSums) / var(y)
+dimnames(M_b) <- list(variance = names(groups), iterations = NULL)
+```
+
+```{r echo = FALSE}
+print_vp_table("M_b", groups_pretty, caption = "Summaries of the posterior distribution of the marginal variance partition over groups of linear terms.")
+```
+
+```{r echo = FALSE, fig.cap = "Marginal variance partition for groups of linear terms."}
+vp_plot(M_b, "deeppink3", groups_pretty)
+```
+
+### Partial variance partition $P_b$
+
+The partial variance partition is calculated as the sum of the residual variance of the least squares prediction of a group of linear terms as a function of the linear terms in all the other groups.
+In practice this is simple to implement using the sample covariance matrix $K_A$ and the grouping matrix $B$.
+
+$$P_l = \frac{1_{|B_l|}'(K_{A_{B_l,B_l}} - K_{A_{B_l,B_{\setminus l}}} K_{A_{B_{\setminus l},B_{\setminus l}}}^{-1} K_{A_{B_{\setminus l}, B_l}})1_{|B_l|}}{\mathrm{Var}[y]}$$
+
+Here $B_l$ is the index of columns in $A$ or $K_A$ that belong to the $l$"th group of linear terms and $B_{\setminus l}$ is its complement, that is the linear terms in all the other groups.
+$|B_l|$ is the number of linear terms in that group.
+
+The R implementation below uses nested functions, where the innermost calculates $U_b$ for one group of linear terms and the outer function iterates over all linear term groups.
+
+```{r}
+partial_variance <- function(K, idx) {
+    P <- sum(K[idx,idx] - K[idx,!idx] %*% solve(K[!idx,!idx]) %*% K[!idx,idx])
+}
+
+partial_variances <- function(K, B) {
+    P <- apply(B, "groups", function(x, K) { partial_variance(K, x == 1 )}, K)
+}
+
+P_b <- apply(K, "iterations", partial_variances, B) / var(y)
+dimnames(P_b) <- list(variance = names(groups), iterations = NULL)
+```
+
+```{r echo = FALSE}
+print_vp_table("P_b", groups_pretty, caption = "Summaries of the posterior distribution of the partial variance partition over groups of linear terms.")
+```
+
+```{r echo = FALSE, fig.cap = "Partial variance partition for groups of linear terms."}
+vp_plot(P_b, "darkgoldenrod2", groups_pretty)
+```
+
+## Sample, population, and predictive variance partitioning
+
+From a computational perspective, the *sample variance partition* is the variance partition calculated from the data used in model fitting, the *predictive variance partition* is the variance partition calculated for some new data, and the *population variance partition* is the variance partition calculated over both new and old data.
+Whether or not the "old" and "new" data one uses can meaningfully be associated with a "prediction" or a "population" is scientifically relevant, but has no bearing on implementing the computations.
+
+### Predictive variance partition
+
+For predictive variance partitioning we need covariates for the "prediction scenario", or in our case the set of ten patches that we excluded from model inference.
+As we construct the design matrix outside of the modeling framework of `rstanarm` we need to take care and apply all data transformations that were part of the model specification.
+
+```{r label = "predictive data"}
+dat_pred$vegetation <- log1p(dat_pred$vegetation)
+
+y_pred <- log(dat_pred$population / dat_pred$previous_population)
+X_pred <- dat_pred[, c("vegetation", "grazing_presence", "previous_population")]
+colnames(X_pred) <- c("log1p(vegetation)", "grazing_presence", "previous_population")
+```
+
+Here we implement the dummy coding for the yearly random effect on our own, but generally for non-linear and random effects a more robust and comprehensive method of matching the values of the random effects to the new data is required.
+
+```{r label = "dummy coding"}
+years <- seq(min(dat_pred$year), max(dat_pred$year))
+X_iid <- t(sapply(dat_pred$year, function(x) { as.integer(years %in% x)}))
+colnames(X_iid) <- paste0("b[(Intercept) year:", years, "]")
+
+X_pred <- as.matrix(cbind(X_pred, X_iid))
+```
+
+Now that we have constructed the design matrix for the prediction, the following steps are identical to sample variance partitioning.
+For more complex cases the code creating the matrix of linear terms would have to be updated to take the prediction into account.
+For example, if the prediction data included years not part of the sample data, we would have to sample values for the new years using the *iid* random effect"s distribution; see the Appendix S1 and the Code supplement (Schulz *et al.* 2024) for the case study results discussed in the article for an example on spatial random effects.
+
+```{r label = "predictive variance partitioning"}
+K_pred <- apply(params, "iterations", lin_term_cov, X_pred, y_pred)
+
+dim(K_pred) <- c(n_lt, n_lt, n_iter)
+dimnames(K_pred) <- list(rows = linear_terms, cols = linear_terms, iterations = NULL)
+
+K_B_pred <- apply(K_pred, "iterations", function(x, B) { t(B) %*% x %*% B }, B)
+
+dim(K_B_pred) <- c(n_group, n_group, n_iter)
+dimnames(K_B_pred) <- list(rows = names(groups), cols = names(groups), iterations = NULL)
+
+V_b_pred <- apply(K_B_pred, "iterations", diag) / var(y)
+dimnames(V_b_pred) <- list(variance = names(groups), iterations = NULL)
+```
+
+```{r echo = FALSE}
+print_vp_table("V_b_pred", groups_pretty, "V_b^{\\mathrm{pred}}", caption = "Summaries of the posterior distribution of the predicted variance partition over groups of linear terms.")
+```
+
+```{r echo = FALSE, fig.cap = "Predictive variance partition for groups of linear terms."}
+vp_plot(V_b_pred, "lightblue", groups_pretty)
+```
+
+### Population variance partition
+
+For the population variance partitioning we only need to concatenate the data and the we can proceed as usual.
+
+```{r label = "population variance partitioning"}
+X_pop <- rbind(X[,colnames(X_pred)], X_pred)
+y_pop <- c(y, y_pred)
+
+K_pop <- apply(params, "iterations", lin_term_cov, X_pop, y_pop)
+
+dim(K_pop) <- c(n_lt, n_lt, n_iter)
+dimnames(K_pop) <- list(rows = linear_terms, cols = linear_terms, iterations = NULL)
+
+K_B_pop <- apply(K_pop, "iterations", function(x, B) { t(B) %*% x %*% B }, B)
+
+dim(K_B_pop) <- c(n_group, n_group, n_iter)
+dimnames(K_B_pop) <- list(rows = names(groups), cols = names(groups), iterations = NULL)
+
+V_b_pop <- apply(K_B_pop, "iterations", diag) / var(y)
+dimnames(V_b_pop) <- list(variance = names(groups), iterations = NULL)
+```
+
+```{r echo = FALSE}
+print_vp_table("V_b_pop", groups_pretty, "V_b^{\\mathrm{pop}}", caption = "Summaries of the posterior distribution of the population variance partition over groups of linear terms.")
+```
+
+```{r echo = FALSE, fig.cap = "Population variance partition for groups of linear terms."}
+vp_plot(V_b_pop, "lightblue", groups_pretty)
+```
+
+## Conditional variance partitioning
+
+For conditional variance partitioning we choose as the conditioning variable the abundance of the host plant which in this case is an ordinal variable (`vegetation`).
+
+```{r label = "conditioning matrix"}
+g <- dat$vegetation
+G <- unique(g)
+
+n_cond <- length(G)
+```
+
+### Conditional variance partitioning
+
+The conditional variance partition is simply the variance partition calculate separately over the observation falling into each level of the conditioning variable.
+
+```{r label = "conditional variance partitioning"}
+conditional_lin_term_cov <- function(params, G, g, X, y) {
+    A <- construct_lin_term_mat(params, X, y)
+
+    K <- t(sapply(G, function(x, A, g) { cov(A[g == x,])}, A, g))
+    dim(K) <- c(length(G), rep(ncol(A), 2))
+    dimnames(K) <- list(condition = G, colnames(A), colnames(A))
+
+    return(K)
+}
+```
+
+The calculations start again from the covariance matrix, now one for each value of `vegetation`.
+The rest of the code differs only in the multiple covariance matrices per posterior sample, and the normalizing variance term, which is calculate only with respect to observations within the same condition.
+
+```{r label = "conditional variance partitions"}
+K_V <- apply(params, "iterations", conditional_lin_term_cov, G, g, X, y)
+
+dim(K_V) <- c(n_cond, n_lt, n_lt, n_iter)
+dimnames(K_V) <- list(
+    condition = G,
+    rows = linear_terms,
+    cols = linear_terms,
+    iterations = NULL
+)
+
+K_V <- (apply(K_V, c("condition", "iterations"), function(x, B) { t(B) %*% x %*% B }, B))
+
+dim(K_V) <- c(n_group, n_group, n_cond, n_iter)
+dimnames(K_V) <- list(
+    rows = names(groups),
+    cols = names(groups),
+    condition = G,
+    iterations = NULL
+)
+
+V_cond <- apply(K_V, c("condition", "iterations"), function(x) {diag(x) / sum(x)})
+dimnames(V_cond) <- list(variance = groups_pretty, condition = G, iterations = NULL)
+```
+
+```{r echo = FALSE}
+knitr::kable(
+    apply(V_cond, c("variance", "condition"), mean), digits = 2, col.names = paste0("$E[V_{\\mathrm{veg}=", G, "}]$"),
+    booktabs = TRUE,
+    longtable = FALSE,
+    format = "latex",
+    position = "!h",
+    escape = FALSE,
+    caption = "Summaries of the posterior distribution of the conditional variance partition over groups of linear terms."
+)
+```
+
+### Variance within and between conditions
+
+Using the set of possible values that `vegetation` can have, and the values of the variable for the observations, we create the matrix $H$, which using dummy coding assings each observation to one level of the conditioning variable.
+
+```{r label = "group membership"}
+H <- sapply(G, function(x, g) { as.integer(g == x) }, g)
+colnames(H) <- G
+```
+
+The matrix $H$ can be used to generate a matrix of between-condition linear term means, which we use to calculate the covariance matrix for both within and between conditions (see also Appendix S1).
+
+```{r label = "within-between variance partitioning"}
+wit_btw_lin_term_cov <- function(params, H, X, y) {
+    A <- construct_lin_term_mat(params, X, y)
+
+    A_cm <- H %*% diag(1 / colSums(H)) %*% t(H) %*% A
+
+    K_wit <- cov(A - A_cm)
+    K_btw <- cov(A_cm)
+
+    K <- abind::abind(K_wit, K_btw, rev.along = 0)
+    dimnames(K) <- list(
+        rows = colnames(A),
+        cols = colnames(A),
+        partition = c("within", "between")
+    )
+
+    return(K)
+}
+```
+
+Again, the calculation of the variance partition follows a familiar pattern, only there are two covariance matrices for each posterior sample. Here the normalizing variance is again the total variance over all observation.
+
+```{r label = "within-between variance partitions"}
+K_WB <- apply(params, "iterations", wit_btw_lin_term_cov, H, X, y)
+
+dim(K_WB) <- c(n_lt, n_lt, 2, n_iter)
+dimnames(K_WB) <- list(
+    rows = linear_terms,
+    cols = linear_terms,
+    partition = c("within", "between"),
+    iterations = NULL
+)
+
+K_WB <- apply(K_WB, c("partition", "iterations"), function(x, B) { t(B) %*% x %*% B }, B)
+
+dim(K_WB) <- c(n_group, n_group, 2, n_iter)
+dimnames(K_WB) <- list(
+    rows = names(groups),
+    cols = names(groups),
+    partition = c("within", "between"),
+    iterations = NULL
+)
+
+V_wb <- apply(K_WB, c("partition", "iterations"), function(x) {diag(x)}) /  var(y)
+dimnames(V_wb) <- list(
+    variance = groups_pretty,
+    partition = c("within", "between"),
+    iterations = NULL
+)
+```
+
+```{r echo = FALSE}
+knitr::kable(
+    apply(V_wb, c("variance", "partition"), mean), digits = 2, col.names = c("$E[V^{\\mathrm{wit}}]$", "$E[V^{\\mathrm{btw}}]$"),
+    booktabs = TRUE,
+    longtable = FALSE,
+    format = "latex",
+    position = "!h",
+    caption = "Summaries of the posterior distribution of the variance partition over groups of linear terms within and between conditions.",
+    escape = FALSE
+)
+```
+
+## Correlations and covariances
+
+### Posterior Correlations between variance partition measures
+
+To look at posterior correlations (or covariances) between the variance partitions, one simply calculates the correlation between the posterior sample from the variance partitions of the different groups of linear terms.
+
+```{r label = "posterior correlations"}
+cor_V_b  <- cor(aperm(V_b, c("iterations", "variance")))
+dimnames(cor_V_b) <- list(rows = groups_pretty, cols = groups_pretty)
+```
+
+```{r echo = FALSE}
+knitr::kable(
+    cor_V_b,
+    digits = 2,
+    booktabs = TRUE,
+    longtable = FALSE,
+    format = "latex",
+    position = "!h",
+    caption = "Posterior correlations between the variance partitions."
+)
+```
+
+### Covariances between linear terms
+
+To summarize the posterior distribution of covariances (or correlations) between the linear terms one can use the covariance matrices used in the calculation of the variance partitions.
+
+```{r label = "covariances"}
+cov_B <- apply(K_B, c("rows", "cols"), mean) / var(y)
+dimnames(cov_B) <- list(rows = groups_pretty, cols = groups_pretty)
+
+cor_B <- apply(K_B, "iterations", cov2cor)
+dim(cor_B) <- c(n_group, n_group, n_iter)
+dimnames(cor_B) <- list(rows = groups_pretty, cols = groups_pretty, iterations = NULL)
+
+cor_B <- apply(cor_B, c("rows", "cols"), mean)
+```
+
+```{r echo = FALSE}
+knitr::kable(
+    cov_B,
+    digits = 2,
+    booktabs = TRUE,
+    longtable = FALSE,
+    format = "latex",
+    position = "!h",
+    caption = "Posterior mean of normalized covariances between the linear terms."
+)
+```
+
+```{r echo = FALSE}
+knitr::kable(
+    cor_B,
+    digits = 2,
+    booktabs = TRUE,
+    longtable = FALSE,
+    format = "latex",
+    position = "!h",
+    caption = "Posterior mean of correlations between the linear terms."
+)
+```
+
+# References
+
+Schulz, T., J. Vanhatalo, and M. Saastamoinen. 2019. Data from: Long-term demographic surveys reveal a consistent relationship between average occupancy and abundance within local populations of a butterfly metapopulation. *Dryad*, Dataset: doi: 10.5061/dryad.ksn02v707
+
+Schulz, T., J. Vanhatalo, and M. Saastamoinen. 2020. Long-term demographic surveys reveal a consistent relationship between average occupancy and abundance within local populations of a butterfly metapopulation. *Ecography* 43: 306--317. doi:10.1111/ecog.04799
+
+Schulz, T., M. Saastamoinen, and J. Vanhatalo. 2024. Code supplement: Variance partitioning case study. *Zenodo*. doi:10.5281/zenodo.5577955
+
+Weigel, B., J. Mäkinen, M. Kallasvuo, and J. Vanhatalo. 2021. Exposing changing phenology of fish larvae by modeling climate effects on temporal early life-stage shifts. *Marine Ecology Progress Series* 666:135--148. doi:10.3354/meps13676

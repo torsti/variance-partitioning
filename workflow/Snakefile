@@ -1,0 +1,24 @@
+from pathlib import Path
+
+
+configfile: Path(workflow.basedir).parent.joinpath("config", "config.yaml")
+
+
+include: "rules/definitions.smk"
+include: "rules/data.smk"
+include: "rules/map_data.smk"
+include: "rules/inference.smk"
+include: "rules/variance.smk"
+include: "rules/tables.smk"
+include: "rules/figures.smk"
+include: "rules/supplement.smk"
+
+
+rule all:
+    input:
+        figure_1="results/figures/map/study_area.pdf",
+        figure_2="results/figures/variance/occupancy/panel.pdf",
+        figure_3="results/figures/variance/occupancy/core/sample/measure.pdf",
+        figure_4="results/figures/variance/occupancy/core/sample/covariance.pdf",
+        s3_figure_s1="results/figures/map/mesh_map.png",
+    default_target: True

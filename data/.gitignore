@@ -1,6 +1,0 @@
-*.tsv
-*.rds
-*.zip
-#
-!survey_area.tsv
-!survey_map.tsv
