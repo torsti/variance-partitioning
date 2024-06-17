@@ -1,5 +1,5 @@
 ---
-title: "Appendix S2: Variance partitioning programming tutorial"
+title: "Appendix S3: Variance partitioning programming tutorial"
 subtitle: |
     | Model-based variance partitioning for statistical ecology
     | Ecological Monographs
