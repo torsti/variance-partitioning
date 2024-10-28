@@ -564,7 +564,7 @@ knitr::kable(
 )
 ```
 
-### Variance within and between conditions
+### Variance within and among conditions
 
 Using the set of possible values that `vegetation` can have, and the values of the variable for the observations, we create the matrix $H$, which using dummy coding assings each observation to one level of the conditioning variable.
 
@@ -573,9 +573,9 @@ H <- sapply(G, function(x, g) { as.integer(g == x) }, g)
 colnames(H) <- G
 ```
 
-The matrix $H$ can be used to generate a matrix of between-condition linear term means, which we use to calculate the covariance matrix for both within and between conditions (see also Appendix S1).
+The matrix $H$ can be used to generate a matrix of among-condition linear term means, which we use to calculate the covariance matrix for both within and among conditions (see also Appendix S1).
 
-```{r label = "within-between variance partitioning"}
+```{r label = "within-among variance partitioning"}
 wit_btw_lin_term_cov <- function(params, H, X, y) {
     A <- construct_lin_term_mat(params, X, y)
 
@@ -588,7 +588,7 @@ wit_btw_lin_term_cov <- function(params, H, X, y) {
     dimnames(K) <- list(
         rows = colnames(A),
         cols = colnames(A),
-        partition = c("within", "between")
+        partition = c("within", "among")
     )
 
     return(K)
@@ -597,14 +597,14 @@ wit_btw_lin_term_cov <- function(params, H, X, y) {
 
 Again, the calculation of the variance partition follows a familiar pattern, only there are two covariance matrices for each posterior sample. Here the normalizing variance is again the total variance over all observation.
 
-```{r label = "within-between variance partitions"}
+```{r label = "within-among variance partitions"}
 K_WB <- apply(params, "iterations", wit_btw_lin_term_cov, H, X, y)
 
 dim(K_WB) <- c(n_lt, n_lt, 2, n_iter)
 dimnames(K_WB) <- list(
     rows = linear_terms,
     cols = linear_terms,
-    partition = c("within", "between"),
+    partition = c("within", "among"),
     iterations = NULL
 )
 
@@ -614,14 +614,14 @@ dim(K_WB) <- c(n_group, n_group, 2, n_iter)
 dimnames(K_WB) <- list(
     rows = names(groups),
     cols = names(groups),
-    partition = c("within", "between"),
+    partition = c("within", "among"),
     iterations = NULL
 )
 
 V_wb <- apply(K_WB, c("partition", "iterations"), function(x) {diag(x)}) /  var(y)
 dimnames(V_wb) <- list(
     variance = groups_pretty,
-    partition = c("within", "between"),
+    partition = c("within", "among"),
     iterations = NULL
 )
 ```
@@ -633,14 +633,14 @@ knitr::kable(
     longtable = FALSE,
     format = "latex",
     position = "!h",
-    caption = "Summaries of the posterior distribution of the variance partition over groups of linear terms within and between conditions.",
+    caption = "Summaries of the posterior distribution of the variance partition over groups of linear terms within and among conditions.",
     escape = FALSE
 )
 ```
 
 ## Correlations and covariances
 
-### Posterior Correlations between variance partition measures
+### Posterior correlations between variance partition measures
 
 To look at posterior correlations (or covariances) between the variance partitions, one simply calculates the correlation between the posterior sample from the variance partitions of the different groups of linear terms.
 
