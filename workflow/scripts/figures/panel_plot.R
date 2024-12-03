@@ -178,7 +178,7 @@ conditional_plot(
     yoffset = yoffset,
     legend = unlist(
         Map(
-            function(a) substitute(V[x["v"]["="][v]], list(v = a)),
+            function(a) substitute(V[italic(b)][","][x["v"]["="][v]], list(v = a)),
             dimnames(V_cond)[[2]]
         )
     )
@@ -206,7 +206,7 @@ vp_comparison_plot(
     ylabel = FALSE,
     col    = WB_colors,
     wh_adj = wh_adj,
-    legend = c(expression(V^wi), expression(V^btw))
+    legend = c(expression(V[italic(b)]^wi), expression(V[italic(b)]^btw))
 )
 
 grid.text("(d)", x = 0.93, y = 0.93, vp = vpPath("canvas", "graph"))

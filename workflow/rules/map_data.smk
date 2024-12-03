@@ -52,8 +52,8 @@ rule hemisphere:
         gml="results/data/map/sphere/{latitude}-{longitude}/hemisphere.gml",
         xsd="results/data/map/sphere/{latitude}-{longitude}/hemisphere.xsd",
     wildcard_constraints:
-        latitude="\d+[.]\d+",
-        longitude="\d+[.]\d+",
+        latitude=r"\d+[.]\d+",
+        longitude=r"\d+[.]\d+",
     params:
         epsg=4326,
         orthographic_projection=lambda w: orthographic_projection(

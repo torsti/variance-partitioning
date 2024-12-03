@@ -116,7 +116,7 @@ else:
 
         return res.x
 
-    antimeridian_angle = estimate_antimeridian_angle()
+    antimeridian_angle = estimate_antimeridian_angle()[0]
     antimeridian_latitude = angle_to_world(antimeridian_angle)[1]
 
     angles = angles + antimeridian_angle

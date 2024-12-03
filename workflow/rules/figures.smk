@@ -93,6 +93,6 @@ rule covariance_plot:
     output:
         "results/figures/variance/{response}/{model_scope}/{partition_scope}/covariance.pdf",
     params:
-        figure={"width_cm": 15, "height_cm": 15, "pointsize": 10},
+        figure={"width_cm": 18, "height_cm": 18, "pointsize": 10},
     script:
         "../scripts/figures/covariance_plot.R"
